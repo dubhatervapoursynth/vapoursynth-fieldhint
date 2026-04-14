@@ -39,19 +39,3 @@ Parameters:
         explanation of each character.
 
         *matches* and *ovr* cannot be used together.
-
-
-Compilation
-===========
-
-::
-
-    ./autogen.sh
-    ./configure
-    make
-
-
-License
-=======
-
-GPL v2, like the Avisynth plugin.
