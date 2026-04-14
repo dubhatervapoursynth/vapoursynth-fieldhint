@@ -1,7 +1,7 @@
 project('FieldHint', 'c',
     default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c99'],
-    license: 'MIT',
-    license_files: 'Copying',
+    license: 'GPL-2.0',
+    license_files: 'LICENSE',
     meson_version: '>=1.2.3',
     version: '4.0',
 )
