@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 
 typedef enum {
@@ -21,7 +21,7 @@ typedef struct {
 
 
 typedef struct {
-    VSNodeRef *node;
+    VSNode *node;
     const VSVideoInfo *vi;
 
     const char *ovrfile;
@@ -30,12 +30,6 @@ typedef struct {
     char *matches;
     int num_matches;
 } FieldhintData;
-
-
-static void VS_CC fieldhintInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    FieldhintData *d = (FieldhintData *) * instanceData;
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
 
 
 static int cmp(const void *av, const void *bv) {
@@ -53,11 +47,8 @@ static int cmp(const void *av, const void *bv) {
 }
 
 
-static const VSFrameRef *VS_CC fieldhintGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    if (activationReason == arFrameReady)
-        return NULL;
-
-    FieldhintData *d = (FieldhintData *) * instanceData;
+static const VSFrame *VS_CC fieldhintGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+    FieldhintData *d = (FieldhintData *) instanceData;
 
     int tf, bf;
 
@@ -92,48 +83,49 @@ static const VSFrameRef *VS_CC fieldhintGetFrame(int n, int activationReason, vo
         for (int i = 0; i < 3; i++)
             vsapi->requestFrameFilter(frames[i], d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        VSFrameRef *frame;
+        VSFrame *frame;
         if (tf == bf) {
-            const VSFrameRef *tmp = vsapi->getFrameFilter(tf, d->node, frameCtx);
+            const VSFrame *tmp = vsapi->getFrameFilter(tf, d->node, frameCtx);
             frame = vsapi->copyFrame(tmp, core);
             vsapi->freeFrame(tmp);
         } else {
-            frame = vsapi->newVideoFrame(d->vi->format, d->vi->width, d->vi->height, NULL, core);
-            const VSFrameRef *top = vsapi->getFrameFilter(tf, d->node, frameCtx);
-            const VSFrameRef *bottom = vsapi->getFrameFilter(bf, d->node, frameCtx);
+            frame = vsapi->newVideoFrame(&d->vi->format, d->vi->width, d->vi->height, NULL, core);
+            const VSFrame *top = vsapi->getFrameFilter(tf, d->node, frameCtx);
+            const VSFrame *bottom = vsapi->getFrameFilter(bf, d->node, frameCtx);
 
             int plane;
 
-            for (plane = 0; plane < d->vi->format->numPlanes; plane++) {
+            for (plane = 0; plane < d->vi->format.numPlanes; plane++) {
                 uint8_t *dstp = vsapi->getWritePtr(frame, plane);
-                int dst_stride = vsapi->getStride(frame, plane);
+                ptrdiff_t dst_stride = vsapi->getStride(frame, plane);
                 int width = vsapi->getFrameWidth(frame, plane);
                 int height = vsapi->getFrameHeight(frame, plane);
 
                 const uint8_t *srcp = vsapi->getReadPtr(top, plane);
-                int src_stride = vsapi->getStride(top, plane);
-                vs_bitblt(dstp, dst_stride*2,
+                ptrdiff_t src_stride = vsapi->getStride(top, plane);
+                vsh_bitblt(dstp, dst_stride*2,
                           srcp, src_stride*2,
-                          width*d->vi->format->bytesPerSample, (height+1)/2);
+                          width*d->vi->format.bytesPerSample, (height+1)/2);
 
                 srcp = vsapi->getReadPtr(bottom, plane);
                 src_stride = vsapi->getStride(bottom, plane);
-                vs_bitblt(dstp + dst_stride, dst_stride*2,
+                vsh_bitblt(dstp + dst_stride, dst_stride*2,
                           srcp + src_stride, src_stride*2,
-                          width*d->vi->format->bytesPerSample, height/2);
+                          width*d->vi->format.bytesPerSample, height/2);
             }
 
             vsapi->freeFrame(top);
             vsapi->freeFrame(bottom);
         }
 
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        vsapi->copyFrameProps(src, frame, core);
+        const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        vsapi->clearMap(vsapi->getFramePropertiesRW(frame));
+        vsapi->copyMap(vsapi->getFramePropertiesRO(src), vsapi->getFramePropertiesRW(frame));
         vsapi->freeFrame(src);
 
         if (d->ovrfile && d->ovr[n].hint != HINT_MISSING) {
-            VSMap *props = vsapi->getFramePropsRW(frame);
-            vsapi->propSetInt(props, "_Combed", d->ovr[n].hint, paReplace);
+            VSMap *props = vsapi->getFramePropertiesRW(frame);
+            vsapi->mapSetInt(props, "_Combed", d->ovr[n].hint, maReplace);
         }
 
         return frame;
@@ -159,36 +151,36 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
     FieldhintData *data;
     int err;
 
-    d.ovrfile = vsapi->propGetData(in, "ovr", 0, &err);
+    d.ovrfile = vsapi->mapGetData(in, "ovr", 0, &err);
 
-    const char *matches = vsapi->propGetData(in, "matches", 0, &err);
+    const char *matches = vsapi->mapGetData(in, "matches", 0, &err);
 
     if (!d.ovrfile && !matches) {
-        vsapi->setError(out, "FieldHint: Either 'ovr' or 'matches' must be passed.");
+        vsapi->mapSetError(out, "FieldHint: Either 'ovr' or 'matches' must be passed.");
         return;
     }
 
     if (d.ovrfile && matches) {
-        vsapi->setError(out, "FieldHint: Only one of 'ovr' and 'matches' must be passed.");
+        vsapi->mapSetError(out, "FieldHint: Only one of 'ovr' and 'matches' must be passed.");
         return;
     }
 
-    d.tff = !!vsapi->propGetInt(in, "tff", 0, &err);
+    d.tff = !!vsapi->mapGetInt(in, "tff", 0, &err);
     if (err && matches) {
-        vsapi->setError(out, "FieldHint: 'tff' must be passed when 'matches' is passed.");
+        vsapi->mapSetError(out, "FieldHint: 'tff' must be passed when 'matches' is passed.");
         return;
     }
 
     if (!err && d.ovrfile) {
-        vsapi->setError(out, "FieldHint: 'tff' must not be passed when 'ovr' is passed.");
+        vsapi->mapSetError(out, "FieldHint: 'tff' must not be passed when 'ovr' is passed.");
         return;
     }
 
-    d.node = vsapi->propGetNode(in, "clip", 0, NULL);
+    d.node = vsapi->mapGetNode(in, "clip", 0, NULL);
     d.vi = vsapi->getVideoInfo(d.node);
 
-    if (!d.vi->format) {
-        vsapi->setError(out, "FieldHint: only constant format input supported");
+    if (!vsh_isConstantVideoFormat(d.vi)) {
+        vsapi->mapSetError(out, "FieldHint: only constant format input supported");
         vsapi->freeNode(d.node);
         return;
     }
@@ -201,7 +193,7 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
         FILE* fh = fopen(d.ovrfile, "r");
         if (!fh) {
             vsapi->freeNode(d.node);
-            vsapi->setError(out, "FieldHint: can't open ovr file");
+            vsapi->mapSetError(out, "FieldHint: can't open ovr file");
             return;
         }
 
@@ -235,7 +227,7 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
                 vsapi->freeNode(d.node);
                 char error[80];
                 sprintf(error, "FieldHint: Can't parse override at line %d", line);
-                vsapi->setError(out, error);
+                vsapi->mapSetError(out, error);
                 return;
             }
 
@@ -250,7 +242,7 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
                 vsapi->freeNode(d.node);
                 char error[80];
                 sprintf(error, "FieldHint: Invalid combed hint at line %d", line);
-                vsapi->setError(out, error);
+                vsapi->mapSetError(out, error);
                 return;
             }
 
@@ -261,33 +253,33 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
 
         fclose(fh);
         if (d.vi->numFrames != line) {
-            vsapi->setError(out, "FieldHint: The number of overrides and the number of frames don't match.");
+            vsapi->mapSetError(out, "FieldHint: The number of overrides and the number of frames don't match.");
             free(d.ovr);
             vsapi->freeNode(d.node);
             return;
         }
     } else { // No overrides file. Use matches.
-        d.num_matches = vsapi->propGetDataSize(in, "matches", 0, &err);
+        d.num_matches = vsapi->mapGetDataSize(in, "matches", 0, &err);
         if (d.num_matches == 0) {
-            vsapi->setError(out, "FieldHint: 'matches' must not be an empty string.");
+            vsapi->mapSetError(out, "FieldHint: 'matches' must not be an empty string.");
             vsapi->freeNode(d.node);
             return;
         }
 
         if (d.vi->numFrames != d.num_matches) {
-            vsapi->setError(out, "FieldHint: The number of matches and the number of frames don't match.");
+            vsapi->mapSetError(out, "FieldHint: The number of matches and the number of frames don't match.");
             vsapi->freeNode(d.node);
             return;
         }
 
         if (matches[0] == 'p' || matches[0] == 'b') {
-            vsapi->setError(out, "FieldHint: The first match cannot be 'p' or 'b'.");
+            vsapi->mapSetError(out, "FieldHint: The first match cannot be 'p' or 'b'.");
             vsapi->freeNode(d.node);
             return;
         }
 
         if (matches[d.num_matches - 1] == 'n' || matches[d.num_matches - 1] == 'u') {
-            vsapi->setError(out, "FieldHint: The last match cannot be 'n' or 'u'.");
+            vsapi->mapSetError(out, "FieldHint: The last match cannot be 'n' or 'u'.");
             vsapi->freeNode(d.node);
             return;
         }
@@ -299,23 +291,18 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
     data = malloc(sizeof(d));
     *data = d;
 
-    vsapi->createFilter(in, out, "FieldHint", fieldhintInit, fieldhintGetFrame, fieldhintFree, fmParallel, 0, data, core);
-    return;
+    VSFilterDependency deps[] = { {data->node, rpGeneral} };
+    vsapi->createVideoFilter(out, "FieldHint", data->vi, fieldhintGetFrame, fieldhintFree, fmParallel, deps, 1, data, core);
 }
 
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    configFunc("com.nodame.fieldhint", "fh", "FieldHint Plugin", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("Fieldhint",
-            "clip:clip;"
-            "ovr:data:opt;"
-            "tff:int:opt;"
-            "matches:data:opt;"
-            , fieldhintCreate, NULL, plugin);
-    registerFunc("FieldHint",
-            "clip:clip;"
-            "ovr:data:opt;"
-            "tff:int:opt;"
-            "matches:data:opt;"
-            , fieldhintCreate, NULL, plugin);
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
+    vspapi->configPlugin("com.nodame.fieldhint", "fh", "FieldHint Plugin", VS_MAKE_VERSION(4, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->registerFunction("Fieldhint",
+        "clip:vnode;"
+        "ovr:data:opt;"
+        "tff:int:opt;"
+        "matches:data:opt;",
+        "clip:vnode;"
+        , fieldhintCreate, NULL, plugin);
 }
