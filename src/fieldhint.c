@@ -298,7 +298,7 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
     vspapi->configPlugin("com.nodame.fieldhint", "fh", "FieldHint Plugin", VS_MAKE_VERSION(4, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
-    vspapi->registerFunction("Fieldhint",
+    vspapi->registerFunction("FieldHint",
         "clip:vnode;"
         "ovr:data:opt;"
         "tff:int:opt;"
