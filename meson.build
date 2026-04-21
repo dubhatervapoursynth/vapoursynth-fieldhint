@@ -3,7 +3,7 @@ project('FieldHint', 'c',
     license: 'GPL-2.0',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
-    version: '4.0',
+    version: '5.0',
 )
 
 incdir = include_directories(
