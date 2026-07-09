@@ -52,7 +52,7 @@ static const VSFrame *VS_CC fieldhintGetFrame(int n, int activationReason, void 
 
     int tf, bf;
 
-    if (d->ovrfile) {
+    if (d->ovr) {
         tf = d->ovr[n].tf;
         bf = d->ovr[n].bf;
     } else {
@@ -123,7 +123,7 @@ static const VSFrame *VS_CC fieldhintGetFrame(int n, int activationReason, void 
         vsapi->copyMap(vsapi->getFramePropertiesRO(src), vsapi->getFramePropertiesRW(frame));
         vsapi->freeFrame(src);
 
-        if (d->ovrfile && d->ovr[n].hint != HINT_MISSING) {
+        if (d->ovr && d->ovr[n].hint != HINT_MISSING) {
             VSMap *props = vsapi->getFramePropertiesRW(frame);
             vsapi->mapSetInt(props, "_Combed", d->ovr[n].hint, maReplace);
         }
@@ -187,75 +187,98 @@ static void VS_CC fieldhintCreate(const VSMap *in, VSMap *out, void *userData, V
 
 
     if (d.ovrfile) {
-        int line = 0;
         char buf[80];
-        char* pos;
-        FILE* fh = fopen(d.ovrfile, "r");
+        FILE *fh = fopen(d.ovrfile, "r");
         if (!fh) {
             vsapi->freeNode(d.node);
             vsapi->mapSetError(out, "FieldHint: can't open ovr file");
             return;
         }
 
-        while (fgets(buf, 80, fh)) {
-            if (buf[strspn(buf, " \t\r\n")] == 0) {
-                continue;
-            }
-            line++;
+        // First pass: count the override lines, skipping blank and comment ('#') lines.
+        int count = 0;
+        while (fgets(buf, sizeof(buf), fh)) {
+            int continuation = strchr(buf, '\n') == NULL;
+            char *pos = buf + strspn(buf, " \t\r\n");
+            if (pos[0] != 0 && pos[0] != '#')
+                count++;
+            // Consume the remaining chunks of an over-long line so it counts only once.
+            while (continuation && fgets(buf, sizeof(buf), fh))
+                continuation = strchr(buf, '\n') == NULL;
         }
-        fseek(fh, 0, 0);
 
-        d.ovr = malloc(line * sizeof(ovr_t));
+        d.ovr = malloc(count * sizeof(ovr_t));
+        if (count && !d.ovr) {
+            fclose(fh);
+            vsapi->freeNode(d.node);
+            vsapi->mapSetError(out, "FieldHint: failed to allocate overrides.");
+            return;
+        }
 
-        line = 0;
-        memset(buf, 0, sizeof(buf));
-        while (fgets(buf, 80, fh)) {
-            char hint = 0;
-            ovr_t *entry = &d.ovr[line];
+        fseek(fh, 0, SEEK_SET);
+
+        // Second pass: parse the override lines. Blank and comment lines are skipped
+        // without consuming an entry, so they never shift the per-frame indices.
+        int line = 0;    // physical line number, for error messages
+        int frame = 0;   // parsed overrides so far == frame the next override applies to
+        while (fgets(buf, sizeof(buf), fh)) {
             line++;
-            pos = buf + strspn(buf, " \t\r\n");
+            int continuation = strchr(buf, '\n') == NULL;
+            char *pos = buf + strspn(buf, " \t\r\n");
 
-            if (pos[0] == '#' || pos[0] == 0) {
-                continue;
-            } else if (sscanf(pos, " %u, %u, %c", &entry->tf, &entry->bf, &hint) == 3) {
-                ;
-            } else if (sscanf(pos, " %u, %u", &entry->tf, &entry->bf) == 2) {
-                ;
-            } else {
-                fclose(fh);
-                free(d.ovr);
-                vsapi->freeNode(d.node);
+            if (pos[0] != '#' && pos[0] != 0) {
+                ovr_t *entry = &d.ovr[frame];
+                char hint = 0;
                 char error[80];
-                sprintf(error, "FieldHint: Can't parse override at line %d", line);
-                vsapi->mapSetError(out, error);
-                return;
+
+                if (sscanf(pos, " %d, %d, %c", &entry->tf, &entry->bf, &hint) != 3 &&
+                    sscanf(pos, " %d, %d", &entry->tf, &entry->bf) != 2) {
+                    fclose(fh);
+                    free(d.ovr);
+                    vsapi->freeNode(d.node);
+                    snprintf(error, sizeof(error), "FieldHint: Can't parse override at line %d", line);
+                    vsapi->mapSetError(out, error);
+                    return;
+                }
+
+                if (entry->tf < 0 || entry->tf >= d.vi->numFrames ||
+                    entry->bf < 0 || entry->bf >= d.vi->numFrames) {
+                    fclose(fh);
+                    free(d.ovr);
+                    vsapi->freeNode(d.node);
+                    snprintf(error, sizeof(error), "FieldHint: Frame number out of range at line %d", line);
+                    vsapi->mapSetError(out, error);
+                    return;
+                }
+
+                entry->hint = HINT_MISSING;
+                if (hint == '-') {
+                    entry->hint = HINT_NOTCOMBED;
+                } else if (hint == '+') {
+                    entry->hint = HINT_COMBED;
+                } else if (hint != 0) {
+                    fclose(fh);
+                    free(d.ovr);
+                    vsapi->freeNode(d.node);
+                    snprintf(error, sizeof(error), "FieldHint: Invalid combed hint at line %d", line);
+                    vsapi->mapSetError(out, error);
+                    return;
+                }
+
+                frame++;
             }
 
-            entry->hint = HINT_MISSING;
-            if (hint == '-') {
-                entry->hint = HINT_NOTCOMBED;
-            } else if (hint == '+') {
-                entry->hint = HINT_COMBED;
-            } else if (hint != 0) {
-                fclose(fh);
-                free(d.ovr);
-                vsapi->freeNode(d.node);
-                char error[80];
-                sprintf(error, "FieldHint: Invalid combed hint at line %d", line);
-                vsapi->mapSetError(out, error);
-                return;
-            }
-
-            while (buf[78] != 0 && buf[78] != '\n' && fgets(buf, 80, fh)) {
-                ; // slurp the rest of a long line
-            }
+            // Consume the remaining chunks of an over-long line.
+            while (continuation && fgets(buf, sizeof(buf), fh))
+                continuation = strchr(buf, '\n') == NULL;
         }
 
         fclose(fh);
-        if (d.vi->numFrames != line) {
-            vsapi->mapSetError(out, "FieldHint: The number of overrides and the number of frames don't match.");
+
+        if (d.vi->numFrames != frame) {
             free(d.ovr);
             vsapi->freeNode(d.node);
+            vsapi->mapSetError(out, "FieldHint: The number of overrides and the number of frames don't match.");
             return;
         }
     } else { // No overrides file. Use matches.
